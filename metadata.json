@@ -1,0 +1,6 @@
+{
+  "name": "Bubble Pop Blitz",
+  "description": "A vibrant and classic bubble shooter game featuring 300+ challenging levels, intuitive aiming, hint assists, and smooth arcade physics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

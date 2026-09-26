@@ -52,17 +52,18 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
             echo "STORE_PASSWORD=${STORE_PASS}" >> $GITHUB_ENV
             echo "KEY_PASSWORD=${KEY_PASS}" >> $GITHUB_ENV
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/my-upload-key.jks" >> $GITHUB_ENV
           else
-            echo "No custom keystore secret found. Generating build keystore with alias 'upload'..."
-            keytool -genkeypair -v -keystore my-upload-key.jks \
-              -alias upload \
+            echo "Generating default debug.keystore for build config..."
+            keytool -genkeypair -v -keystore debug.keystore \
+              -alias androiddebugkey \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass android -keypass android \
-              -dname "CN=BubblePopBlitz, OU=App, O=AIStudio, L=MountainView, ST=CA, C=US"
+              -dname "CN=Android Debug,O=Android,C=US"
             echo "STORE_PASSWORD=android" >> $GITHUB_ENV
             echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/debug.keyStore" >> $GITHUB_ENV
           fi
-          echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/my-upload-key.jks" >> $GITHUB_ENV
 
       - name: Build Release AAB (Google Play Bundle)
         run: ./gradlew :app:bundleRelease --no-daemon --stacktrace

@@ -14,6 +14,8 @@ jobs:
   build:
     name: Build APK and AAB
     runs-on: ubuntu-latest
+    env:
+      JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
 
     steps:
       - name: Checkout Repository
@@ -62,8 +64,11 @@ jobs:
           fi
           echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/my-upload-key.jks" >> $GITHUB_ENV
 
-      - name: Build Release AAB, Release APK & Debug APK
-        run: ./gradlew :app:bundleRelease :app:assembleRelease :app:assembleDebug --stacktrace
+      - name: Build Release AAB (Google Play Bundle)
+        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
+
+      - name: Build Release & Debug APK
+        run: ./gradlew :app:assembleRelease :app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload Release AAB (Google Play Store)
         uses: actions/upload-artifact@v4

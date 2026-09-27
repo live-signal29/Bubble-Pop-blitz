@@ -64,14 +64,20 @@ jobs:
           # Release keystore
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "Using release keystore from GitHub Secrets..."
-
             echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
-
             echo "STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
             echo "KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+          elif [ -f upload.keystore.base64 ]; then
+            echo "Using permanent upload.keystore.base64 from repository..."
+            cat upload.keystore.base64 | base64 --decode > my-upload-key.jks
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
+          elif [ -f my-upload-key.jks ]; then
+            echo "Using existing my-upload-key.jks..."
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
           else
-            echo "No release keystore found. Creating temporary keystore..."
-
+            echo "Creating permanent upload keystore..."
             keytool -genkeypair -v \
               -keystore my-upload-key.jks \
               -alias upload \
@@ -80,8 +86,7 @@ jobs:
               -validity 10000 \
               -storepass android \
               -keypass android \
-              -dname "CN=Temporary Upload,O=Android,C=US"
-
+              -dname "CN=Bubble Pop Blitz,O=AI Studio,C=US"
             echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
             echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
           fi

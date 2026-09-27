@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import android.app.Activity
+import android.widget.Toast
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -105,7 +107,7 @@ fun GameScreen(
     val coroutineScope = rememberCoroutineScope()
 
     val levelData = remember(levelNumber) { LevelRepository.getLevel(levelNumber) }
-    val engine = remember { BubbleShooterEngine() }
+    val engine = remember(levelNumber) { BubbleShooterEngine() }
 
     // Board state
     val boardBubbles = remember(levelNumber) {
@@ -687,15 +689,18 @@ fun GameScreen(
                     activeHint = activeHint,
                     isAiming = isAiming,
                     onAimTouch = { touchOffset ->
-                        if (projectile == null) {
+                        if (touchOffset == Offset.Zero) {
+                            isAiming = false
+                            aimTrajectory = null
+                        } else if (projectile == null) {
                             isAiming = true
                             aimTrajectory = engine.calculateAimTrajectory(touchOffset, boardBubbles)
                         }
                     },
                     onShootReleased = { releaseOffset ->
                         if (projectile == null && remainingShots > 0) {
-                            val traj = aimTrajectory ?: engine.calculateAimTrajectory(releaseOffset, boardBubbles)
                             val start = engine.cannonOffset
+                            val traj = aimTrajectory ?: engine.calculateAimTrajectory(releaseOffset, boardBubbles)
                             val target = if (traj.segments.size > 1) traj.segments[1] else releaseOffset
                             val dx = target.x - start.x
                             val dy = target.y - start.y
@@ -795,29 +800,33 @@ fun GameScreen(
             localizedPrice = localizedPrice,
             onRemoveAdsClicked = {
                 if (activity != null) {
-                    billingManager.launchRemoveAdsPurchase(activity) {}
+                    soundManager.playClick()
+                    billingManager.launchRemoveAdsPurchase(activity) { errorMsg ->
+                        Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )
 
         // Level Complete Dialog
+        val baseCoinsEarned = 25 + (starsEarned * 15)
         LevelCompleteDialog(
             isOpen = isLevelCompleteOpen,
             levelNumber = levelNumber,
             stars = starsEarned,
             score = currentScore,
-            coinsEarned = 25 + (starsEarned * 15),
+            coinsEarned = baseCoinsEarned,
             isDoubleClaimed = isDoubleClaimed,
             onClaimDoubleCoinsClicked = {
                 if (activity != null && !isDoubleClaimed) {
-                    val baseReward = 25 + (starsEarned * 15)
                     AdsManager.showRewardedAd(
                         activity = activity,
                         onRewardEarned = {
                             isDoubleClaimed = true
-                            onAddCoins(baseReward)
+                            onAddCoins(baseCoinsEarned)
                             soundManager.playWin()
                             soundManager.playReward()
+                            Toast.makeText(context, "🎬 2X Bonus: +$baseCoinsEarned Extra Coins Added!", Toast.LENGTH_SHORT).show()
                         },
                         onAdClosed = { rewardEarned ->
                             if (!rewardEarned) {
@@ -832,15 +841,25 @@ fun GameScreen(
             },
             onReplayClicked = {
                 isLevelCompleteOpen = false
+                onAddCoins(baseCoinsEarned)
+                soundManager.playReward()
+                Toast.makeText(context, "🎁 +$baseCoinsEarned Coins Claimed!", Toast.LENGTH_SHORT).show()
                 resetLevel()
             },
             onNextLevelClicked = {
                 isLevelCompleteOpen = false
-                // Level pass reward added on next level transition!
                 val nextLvl = levelNumber + 1
-                onAddCoins(30) // Bonus coins reward for advancing
-                onAddHint()    // Bonus hint booster reward
+                val advanceBonusCoins = 30
+                val totalAwardCoins = baseCoinsEarned + advanceBonusCoins
+                onAddCoins(totalAwardCoins)
+                onAddHint()
                 soundManager.playReward()
+                soundManager.playWin()
+                Toast.makeText(
+                    context,
+                    "🎁 Reward Claimed! +$totalAwardCoins Coins & +1 Hint Added!",
+                    Toast.LENGTH_LONG
+                ).show()
                 onNextLevel(nextLvl)
             }
         )

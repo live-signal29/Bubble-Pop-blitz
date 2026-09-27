@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Activity
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -13,6 +14,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -233,7 +235,9 @@ fun BubbleGameApp(
                 },
                 onRemoveAdsClicked = {
                     soundManager.playClick()
-                    billingManager.launchRemoveAdsPurchase(activity) {}
+                    billingManager.launchRemoveAdsPurchase(activity) { errorMsg ->
+                        Toast.makeText(activity, errorMsg, Toast.LENGTH_SHORT).show()
+                    }
                 }
             )
         }
@@ -264,56 +268,58 @@ fun BubbleGameApp(
         }
 
         is Screen.Game -> {
-            BackHandler {
-                currentScreen = Screen.LevelMap
-            }
-
-            GameScreen(
-                levelNumber = screen.levelNumber,
-                soundManager = soundManager,
-                billingManager = billingManager,
-                userCoins = coins,
-                availableHints = availableHints,
-                isAdsRemoved = isAdsRemoved,
-                localizedPrice = localizedPrice,
-                onLevelCompleted = { level, stars, score ->
-                    coroutineScope.launch {
-                        repository.completeLevel(level, stars, score)
-                    }
-                },
-                onNextLevel = { nextLvl ->
-                    selectedLevelNumber = nextLvl
-                    currentScreen = Screen.Game(nextLvl)
-                },
-                onSpendCoins = { spent ->
-                    coroutineScope.launch {
-                        repository.spendCoins(spent)
-                    }
-                },
-                onAddCoins = { earned ->
-                    coroutineScope.launch {
-                        repository.addCoins(earned)
-                    }
-                },
-                onUseHint = {
-                    coroutineScope.launch {
-                        repository.useHint()
-                    }
-                },
-                onAddHint = {
-                    coroutineScope.launch {
-                        repository.addHints(1)
-                    }
-                },
-                onOpenCoinStore = {
-                    soundManager.playClick()
-                    isCoinStoreOpen = true
-                },
-                onBackToMapClicked = {
-                    soundManager.playClick()
+            key(screen.levelNumber) {
+                BackHandler {
                     currentScreen = Screen.LevelMap
                 }
-            )
+
+                GameScreen(
+                    levelNumber = screen.levelNumber,
+                    soundManager = soundManager,
+                    billingManager = billingManager,
+                    userCoins = coins,
+                    availableHints = availableHints,
+                    isAdsRemoved = isAdsRemoved,
+                    localizedPrice = localizedPrice,
+                    onLevelCompleted = { level, stars, score ->
+                        coroutineScope.launch {
+                            repository.completeLevel(level, stars, score)
+                        }
+                    },
+                    onNextLevel = { nextLvl ->
+                        selectedLevelNumber = nextLvl
+                        currentScreen = Screen.Game(nextLvl)
+                    },
+                    onSpendCoins = { spent ->
+                        coroutineScope.launch {
+                            repository.spendCoins(spent)
+                        }
+                    },
+                    onAddCoins = { earned ->
+                        coroutineScope.launch {
+                            repository.addCoins(earned)
+                        }
+                    },
+                    onUseHint = {
+                        coroutineScope.launch {
+                            repository.useHint()
+                        }
+                    },
+                    onAddHint = {
+                        coroutineScope.launch {
+                            repository.addHints(1)
+                        }
+                    },
+                    onOpenCoinStore = {
+                        soundManager.playClick()
+                        isCoinStoreOpen = true
+                    },
+                    onBackToMapClicked = {
+                        soundManager.playClick()
+                        currentScreen = Screen.LevelMap
+                    }
+                )
+            }
         }
     }
 
@@ -353,7 +359,10 @@ fun BubbleGameApp(
         isAdsRemoved = isAdsRemoved,
         localizedPrice = localizedPrice,
         onRemoveAdsClicked = {
-            billingManager.launchRemoveAdsPurchase(activity) {}
+            soundManager.playClick()
+            billingManager.launchRemoveAdsPurchase(activity) { errorMsg ->
+                Toast.makeText(activity, errorMsg, Toast.LENGTH_SHORT).show()
+            }
         }
     )
 

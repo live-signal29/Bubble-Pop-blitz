@@ -9,12 +9,14 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -97,38 +99,59 @@ fun GameCanvas(
         }
     }
 
+    val currentOnAimTouch by rememberUpdatedState(onAimTouch)
+    val currentOnShootReleased by rememberUpdatedState(onShootReleased)
+    val currentOnSwapNextClicked by rememberUpdatedState(onSwapNextClicked)
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        onAimTouch(offset)
-                    },
-                    onDrag = { change, _ ->
-                        change.consume()
-                        onAimTouch(change.position)
-                    },
-                    onDragEnd = {
-                        trajectory?.let { onShootReleased(it.segments.lastOrNull() ?: Offset.Zero) }
-                    },
-                    onDragCancel = {}
-                )
-            }
-            .pointerInput(Unit) {
-                detectTapGestures { tapOffset ->
+            .pointerInput(engine) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
                     val cannonPos = engine.cannonOffset
                     val radius = engine.bubbleRadius
+
                     // Check if tap was on next bubble queue (left of cannon)
                     val nextBubblePos = Offset(cannonPos.x - (radius * 3.4f), cannonPos.y)
-                    val distToNextSq = (tapOffset.x - nextBubblePos.x) * (tapOffset.x - nextBubblePos.x) +
-                            (tapOffset.y - nextBubblePos.y) * (tapOffset.y - nextBubblePos.y)
-                    if (distToNextSq <= (radius * 1.6f) * (radius * 1.6f)) {
-                        onSwapNextClicked()
-                    } else if (tapOffset.y < cannonPos.y - radius) {
-                        // Tap in upper board to aim & shoot directly
-                        onAimTouch(tapOffset)
-                        onShootReleased(tapOffset)
+                    val distToNextSq = (down.position.x - nextBubblePos.x) * (down.position.x - nextBubblePos.x) +
+                            (down.position.y - nextBubblePos.y) * (down.position.y - nextBubblePos.y)
+
+                    if (distToNextSq <= (radius * 1.8f) * (radius * 1.8f)) {
+                        down.consume()
+                        val up = waitForUpOrCancellation()
+                        if (up != null) {
+                            up.consume()
+                            currentOnSwapNextClicked()
+                        }
+                    } else {
+                        var currentPos = down.position
+                        // Aim immediately on touch down
+                        if (currentPos.y < cannonPos.y + radius) {
+                            down.consume()
+                            currentOnAimTouch(currentPos)
+                        }
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val move = event.changes.firstOrNull()
+                            if (move == null || !move.pressed) {
+                                break
+                            }
+                            move.consume()
+                            currentPos = move.position
+                            if (currentPos.y < cannonPos.y + radius) {
+                                currentOnAimTouch(currentPos)
+                            }
+                        }
+
+                        // Finger released (finger lifted up): shoot directly if aimed upward
+                        if (currentPos.y < cannonPos.y - (radius * 0.4f)) {
+                            currentOnShootReleased(currentPos)
+                        } else {
+                            // Cancelled aim (dragged too low)
+                            currentOnAimTouch(Offset.Zero)
+                        }
                     }
                 }
             }
@@ -182,17 +205,7 @@ fun GameCanvas(
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(16f, 12f))
         )
 
-        // 2. Draw Trajectory Line when aiming
-        if (isAiming && trajectory != null && projectile == null) {
-            drawAimTrajectory(trajectory, radius, currentShooterColor)
-        }
-
-        // 3. Draw Active Hint Guide & Highlights
-        if (activeHint != null) {
-            drawHintGuide(activeHint, engine, hintPulse)
-        }
-
-        // 4. Draw Board Bubbles (Modern Glass Orb Styling)
+        // 2. Draw Board Bubbles (Modern Glass Orb Styling)
         for ((pos, bubble) in boardBubbles) {
             val center = engine.getBubbleCenter(pos)
             val isHintTarget = activeHint?.matchingPositions?.contains(pos) == true
@@ -205,12 +218,12 @@ fun GameCanvas(
             )
         }
 
-        // 5. Draw Popping / Breaking Bubbles Animation (Shockwaves + Expanding Burst + Shatter)
+        // 3. Draw Popping / Breaking Bubbles Animation (Shockwaves + Expanding Burst + Shatter)
         for (popping in poppingBubbles) {
             drawPoppingBubbleEffect(popping)
         }
 
-        // 6. Draw Falling Bubbles (detached bubbles with rotational motion)
+        // 4. Draw Falling Bubbles (detached bubbles with rotational motion)
         for (falling in fallingBubbles) {
             rotate(degrees = falling.rotation, pivot = Offset(falling.x, falling.y)) {
                 drawModernGlassBubble(
@@ -222,11 +235,10 @@ fun GameCanvas(
             }
         }
 
-        // 7. Draw Pop Particles & Shattered Crystal Shards
+        // 5. Draw Pop Particles & Shattered Crystal Shards
         for (particle in particles) {
             val particleAlpha = particle.alpha.coerceIn(0f, 1f)
             if (particle.isShard) {
-                // Shattered crystal glass shard (angular shard with tumbling rotation)
                 rotate(degrees = particle.rotation, pivot = Offset(particle.x, particle.y)) {
                     val shardPath = Path().apply {
                         val s = particle.size * 1.5f
@@ -246,19 +258,16 @@ fun GameCanvas(
                     )
                 }
             } else {
-                // Particle core spark
                 drawCircle(
                     color = Color.White.copy(alpha = particleAlpha),
                     radius = particle.size * 0.45f,
                     center = Offset(particle.x, particle.y)
                 )
-                // Vivid neon halo
                 drawCircle(
                     color = particle.color.highlightColor.copy(alpha = particleAlpha * 0.85f),
                     radius = particle.size * 0.9f,
                     center = Offset(particle.x, particle.y)
                 )
-                // Ambient glow aura
                 drawCircle(
                     color = particle.color.primaryColor.copy(alpha = particleAlpha * 0.4f),
                     radius = particle.size * 1.5f,
@@ -267,7 +276,7 @@ fun GameCanvas(
             }
         }
 
-        // 8. Draw Active Flying Projectile Bubble (with high-velocity energy comet trail)
+        // 6. Draw Active Flying Projectile Bubble (with high-velocity energy comet trail)
         if (projectile != null) {
             drawModernGlassBubble(
                 center = Offset(projectile.x, projectile.y),
@@ -276,6 +285,16 @@ fun GameCanvas(
                 hasTail = true,
                 velocity = Offset(projectile.vx, projectile.vy)
             )
+        }
+
+        // 7. Draw Active Hint Guide & Highlights
+        if (activeHint != null) {
+            drawHintGuide(activeHint, engine, hintPulse)
+        }
+
+        // 8. Draw Trajectory Line & Target Landing Reticle (ON TOP OF BUBBLES!)
+        if (isAiming && trajectory != null && projectile == null) {
+            drawAimTrajectory(trajectory, radius, currentShooterColor, engine)
         }
 
         // 9. Draw Modern Cybernetic Launcher / Turret at Bottom (with Recoil Kickback & Muzzle Flash)
@@ -550,12 +569,13 @@ private fun DrawScope.drawModernGlassBubble(
 }
 
 /**
- * Modern Laser Guide Aim Trajectory
+ * Modern Laser Guide Aim Trajectory (Drawn on top of board bubbles for crystal-clear targeting)
  */
 private fun DrawScope.drawAimTrajectory(
     trajectory: AimTrajectory,
     radius: Float,
-    currentColor: BubbleColor
+    currentColor: BubbleColor,
+    engine: BubbleShooterEngine
 ) {
     val segments = trajectory.segments
     if (segments.size < 2) return
@@ -564,13 +584,13 @@ private fun DrawScope.drawAimTrajectory(
         val p1 = segments[i]
         val p2 = segments[i + 1]
         val dist = hypot(p2.x - p1.x, p2.y - p1.y)
-        val steps = (dist / (radius * 0.58f)).toInt().coerceAtLeast(1)
+        val steps = (dist / (radius * 0.52f)).toInt().coerceAtLeast(1)
 
         for (s in 0..steps) {
             val t = s.toFloat() / steps
             val dotX = p1.x + (p2.x - p1.x) * t
             val dotY = p1.y + (p2.y - p1.y) * t
-            val dotRadius = radius * 0.16f * (1.0f - (t * 0.2f))
+            val dotRadius = radius * 0.16f * (1.0f - (t * 0.15f))
 
             // White crisp laser core
             drawCircle(
@@ -580,31 +600,50 @@ private fun DrawScope.drawAimTrajectory(
             )
             // Vivid colored glow
             drawCircle(
-                color = currentColor.primaryColor.copy(alpha = 0.65f),
+                color = currentColor.primaryColor.copy(alpha = 0.75f),
                 radius = dotRadius * 1.8f,
                 center = Offset(dotX, dotY)
             )
         }
     }
 
-    // Landing ring indicator with concentric laser targeting
+    // Landing ring indicator & ghost bubble in the exact grid slot where ball will lodge
     val targetSlot = trajectory.targetGridSlot
-    if (targetSlot != null && trajectory.targetHitOffset != null) {
-        val targetPos = trajectory.targetHitOffset
+    val targetPos = if (targetSlot != null) {
+        engine.getBubbleCenter(targetSlot)
+    } else {
+        trajectory.targetHitOffset
+    }
+
+    if (targetPos != null) {
+        // Semi-transparent ghost preview bubble of current color
         drawCircle(
-            color = currentColor.glowColor.copy(alpha = 0.45f),
+            color = currentColor.primaryColor.copy(alpha = 0.55f),
+            radius = radius * 0.95f,
+            center = targetPos
+        )
+        // Outer pulsing laser targeting ring
+        drawCircle(
+            color = Color.White,
+            radius = radius * 1.05f,
+            center = targetPos,
+            style = Stroke(width = 2.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)))
+        )
+        drawCircle(
+            color = currentColor.glowColor.copy(alpha = 0.85f),
             radius = radius * 1.15f,
+            center = targetPos,
+            style = Stroke(width = 1.5.dp.toPx())
+        )
+        // Bright target center bullseye
+        drawCircle(
+            color = Color.White,
+            radius = radius * 0.35f,
             center = targetPos
         )
         drawCircle(
-            color = Color.White,
-            radius = radius * 0.95f,
-            center = targetPos,
-            style = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)))
-        )
-        drawCircle(
-            color = currentColor.primaryColor,
-            radius = radius * 0.35f,
+            color = currentColor.highlightColor,
+            radius = radius * 0.22f,
             center = targetPos
         )
     }

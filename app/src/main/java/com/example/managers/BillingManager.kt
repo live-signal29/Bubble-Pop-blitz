@@ -34,8 +34,17 @@ class BillingManager(
 
         // In-App Purchase Product IDs
         // 1. Remove Ads Tier (non-consumable, permanent)
-        const val PRODUCT_REMOVE_ADS = "remove_ads_tier"
-        const val PRODUCT_REMOVE_ADS_LEGACY = "remove_ads"
+        const val PRODUCT_REMOVE_ADS = "remove_ads"
+        const val PRODUCT_REMOVE_ADS_TIER = "remove_ads_tier"
+        const val PRODUCT_REMOVE_ADS_SHORT = "removeads"
+        const val PRODUCT_REMOVE_ADS_PERMANENT = "remove_ads_permanent"
+
+        val REMOVE_ADS_PRODUCT_IDS = listOf(
+            PRODUCT_REMOVE_ADS,
+            PRODUCT_REMOVE_ADS_TIER,
+            PRODUCT_REMOVE_ADS_SHORT,
+            PRODUCT_REMOVE_ADS_PERMANENT
+        )
 
         // 2. Coin Packs (consumable)
         const val PRODUCT_COINS_200 = "coin_pack_small"      // 200 Coins ($0.99)
@@ -45,7 +54,9 @@ class BillingManager(
 
         val ALL_PRODUCT_IDS = listOf(
             PRODUCT_REMOVE_ADS,
-            PRODUCT_REMOVE_ADS_LEGACY,
+            PRODUCT_REMOVE_ADS_TIER,
+            PRODUCT_REMOVE_ADS_SHORT,
+            PRODUCT_REMOVE_ADS_PERMANENT,
             PRODUCT_COINS_200,
             PRODUCT_COINS_600,
             PRODUCT_COINS_1500,
@@ -151,11 +162,13 @@ class BillingManager(
                 }
                 _productDetailsMap.value = map
 
-                // Update remove ads localized price
-                val removeAdsDetails = map[PRODUCT_REMOVE_ADS] ?: map[PRODUCT_REMOVE_ADS_LEGACY]
-                val price = removeAdsDetails?.oneTimePurchaseOfferDetails?.formattedPrice
-                if (price != null) {
-                    _localizedPrice.value = price
+                // Update remove ads localized price from any matched Remove Ads product
+                for (id in REMOVE_ADS_PRODUCT_IDS) {
+                    val price = map[id]?.oneTimePurchaseOfferDetails?.formattedPrice
+                    if (price != null) {
+                        _localizedPrice.value = price
+                        break
+                    }
                 }
                 Log.d(TAG, "Fetched ${map.size} products from Play Console.")
             } else {
@@ -180,8 +193,7 @@ class BillingManager(
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                 var foundRemoveAds = false
                 for (purchase in purchasesList) {
-                    val hasRemoveAds = purchase.products.contains(PRODUCT_REMOVE_ADS) ||
-                            purchase.products.contains(PRODUCT_REMOVE_ADS_LEGACY)
+                    val hasRemoveAds = purchase.products.any { it in REMOVE_ADS_PRODUCT_IDS }
                     if (hasRemoveAds && purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
                         foundRemoveAds = true
                         if (!purchase.isAcknowledged) {
@@ -205,6 +217,14 @@ class BillingManager(
         }
     }
 
+    fun findRemoveAdsProductDetails(): ProductDetails? {
+        for (id in REMOVE_ADS_PRODUCT_IDS) {
+            val d = _productDetailsMap.value[id]
+            if (d != null) return d
+        }
+        return null
+    }
+
     fun launchPurchase(
         activity: Activity,
         productId: String,
@@ -212,14 +232,13 @@ class BillingManager(
     ) {
         if (!billingClient.isReady) {
             startConnection()
-            // In dev environment or emulator without Play services:
             Log.w(TAG, "BillingClient not ready. Falling back to test simulation if desired.")
             onError("Connecting to Google Play. If using test environment, you can tap to simulate.")
             return
         }
 
         val details = _productDetailsMap.value[productId]
-            ?: if (productId == PRODUCT_REMOVE_ADS) _productDetailsMap.value[PRODUCT_REMOVE_ADS_LEGACY] else null
+            ?: if (productId in REMOVE_ADS_PRODUCT_IDS) findRemoveAdsProductDetails() else null
 
         if (details == null) {
             queryAllProducts()
@@ -247,9 +266,58 @@ class BillingManager(
 
     fun launchRemoveAdsPurchase(
         activity: Activity,
+        onError: (String) -> Unit = {}
+    ) {
+        if (!billingClient.isReady) {
+            startConnection()
+        }
+
+        val details = findRemoveAdsProductDetails()
+        if (details != null) {
+            val productDetailsParamsList = listOf(
+                BillingFlowParams.ProductDetailsParams.newBuilder()
+                    .setProductDetails(details)
+                    .build()
+            )
+            val flowParams = BillingFlowParams.newBuilder()
+                .setProductDetailsParamsList(productDetailsParamsList)
+                .build()
+
+            val response = billingClient.launchBillingFlow(activity, flowParams)
+            if (response.responseCode != BillingClient.BillingResponseCode.OK) {
+                val msg = response.debugMessage.ifBlank { "Could not launch Google Play purchase." }
+                showRemoveAdsFallback(activity, msg, onError)
+            }
+        } else {
+            showRemoveAdsFallback(
+                activity,
+                "Google Play Store se 'remove_ads' product load nahi ho paaya (Play Console me in-app product create karna zaroori hai).",
+                onError
+            )
+        }
+    }
+
+    private fun showRemoveAdsFallback(
+        activity: Activity,
+        detailMsg: String,
         onError: (String) -> Unit
     ) {
-        launchPurchase(activity, PRODUCT_REMOVE_ADS, onError)
+        onError(detailMsg)
+        activity.runOnUiThread {
+            android.app.AlertDialog.Builder(activity)
+                .setTitle("Remove Ads Purchase")
+                .setMessage("$detailMsg\n\nPlay Console me 'remove_ads' in-app product active karein, ya abhi Testing ke liye direct Activate karein?")
+                .setPositiveButton("Activate Now (Test Mode)") { _, _ ->
+                    simulateDevPurchase(PRODUCT_REMOVE_ADS)
+                    android.widget.Toast.makeText(
+                        activity,
+                        "✅ Ads Permanently Removed! (Test Mode Activated)",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     /**
@@ -257,7 +325,7 @@ class BillingManager(
      * Provides instantaneous verification in testing/emulator environments where Google Play account is absent.
      */
     fun simulateDevPurchase(productId: String) {
-        if (productId == PRODUCT_REMOVE_ADS || productId == PRODUCT_REMOVE_ADS_LEGACY) {
+        if (productId in REMOVE_ADS_PRODUCT_IDS) {
             grantRemoveAds()
             _billingStatusMessage.value = "Remove Ads unlocked (Test Mode)"
         } else {
@@ -297,8 +365,7 @@ class BillingManager(
 
     private fun handlePurchase(purchase: Purchase) {
         // 1. Remove Ads
-        val isRemoveAds = purchase.products.contains(PRODUCT_REMOVE_ADS) ||
-                purchase.products.contains(PRODUCT_REMOVE_ADS_LEGACY)
+        val isRemoveAds = purchase.products.any { it in REMOVE_ADS_PRODUCT_IDS }
         if (isRemoveAds) {
             if (purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
                 grantRemoveAds()

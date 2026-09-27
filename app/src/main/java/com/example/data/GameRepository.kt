@@ -85,12 +85,10 @@ class GameRepository(private val levelDao: LevelDao) {
         // Unlock next level
         val nextLevel = levelNumber + 1
         val stats = getOrCreateUserStats()
-        val coinsEarned = 25 + (stars * 15)
         val newHighest = maxOf(stats.highestUnlockedLevel, nextLevel)
         levelDao.insertOrUpdateUserStats(
             stats.copy(
-                highestUnlockedLevel = newHighest,
-                coins = stats.coins + coinsEarned
+                highestUnlockedLevel = newHighest
             )
         )
     }

@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -88,6 +89,15 @@ fun GameCanvas(
         ),
         label = "idle_pulse"
     )
+    val aimMarchProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "aim_march_progress"
+    )
 
     // Pre-create paint objects for floating score and combo text
     val textPaint = remember {
@@ -113,11 +123,11 @@ fun GameCanvas(
                     val radius = engine.bubbleRadius
 
                     // Check if tap was on next bubble queue (left of cannon)
-                    val nextBubblePos = Offset(cannonPos.x - (radius * 3.4f), cannonPos.y)
+                    val nextBubblePos = Offset(cannonPos.x - (radius * 2.8f), cannonPos.y)
                     val distToNextSq = (down.position.x - nextBubblePos.x) * (down.position.x - nextBubblePos.x) +
                             (down.position.y - nextBubblePos.y) * (down.position.y - nextBubblePos.y)
 
-                    if (distToNextSq <= (radius * 1.8f) * (radius * 1.8f)) {
+                    if (distToNextSq <= (radius * 1.6f) * (radius * 1.6f)) {
                         down.consume()
                         val up = waitForUpOrCancellation()
                         if (up != null) {
@@ -127,10 +137,8 @@ fun GameCanvas(
                     } else {
                         var currentPos = down.position
                         // Aim immediately on touch down
-                        if (currentPos.y < cannonPos.y + radius) {
-                            down.consume()
-                            currentOnAimTouch(currentPos)
-                        }
+                        down.consume()
+                        currentOnAimTouch(currentPos)
 
                         while (true) {
                             val event = awaitPointerEvent()
@@ -140,16 +148,14 @@ fun GameCanvas(
                             }
                             move.consume()
                             currentPos = move.position
-                            if (currentPos.y < cannonPos.y + radius) {
-                                currentOnAimTouch(currentPos)
-                            }
+                            currentOnAimTouch(currentPos)
                         }
 
-                        // Finger released (finger lifted up): shoot directly if aimed upward
-                        if (currentPos.y < cannonPos.y - (radius * 0.4f)) {
+                        // Finger released (finger lifted up): shoot towards target
+                        if (currentPos.y < cannonPos.y + (radius * 1.5f)) {
                             currentOnShootReleased(currentPos)
                         } else {
-                            // Cancelled aim (dragged too low)
+                            // Cancelled aim (dragged way off bottom edge)
                             currentOnAimTouch(Offset.Zero)
                         }
                     }
@@ -294,7 +300,7 @@ fun GameCanvas(
 
         // 8. Draw Trajectory Line & Target Landing Reticle (ON TOP OF BUBBLES!)
         if (isAiming && trajectory != null && projectile == null) {
-            drawAimTrajectory(trajectory, radius, currentShooterColor, engine)
+            drawAimTrajectory(trajectory, radius, currentShooterColor, engine, aimMarchProgress)
         }
 
         // 9. Draw Modern Cybernetic Launcher / Turret at Bottom (with Recoil Kickback & Muzzle Flash)
@@ -308,19 +314,116 @@ fun GameCanvas(
             muzzleFlashes = muzzleFlashes
         )
 
-        // 10. Draw Floating Score & Combo Texts (+100, +300, "COMBO x2!")
+        // 10. Draw Floating Score & Distinct Combo Tier Animations (Tier 1: 3 balls, Tier 2: 5 balls, Tier 3: 10+ balls)
         for (scoreText in floatingScores) {
             val alpha = scoreText.alpha.coerceIn(0f, 1f)
             if (alpha > 0.02f) {
-                textPaint.color = scoreText.color.highlightColor.toArgb()
-                textPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
-                textPaint.textSize = (radius * 0.75f * scoreText.scale).coerceAtLeast(18f)
-                drawContext.canvas.nativeCanvas.drawText(
-                    scoreText.text,
-                    scoreText.x,
-                    scoreText.y,
-                    textPaint
-                )
+                val baseSize = (radius * 0.72f * scoreText.scale).coerceAtLeast(16f)
+
+                when (scoreText.tier) {
+                    3 -> {
+                        // TIER 3: 💥 MEGA POP (10+ balls) 💥
+                        val bgWidth = baseSize * scoreText.text.length * 0.52f + 36f
+                        val bgHeight = baseSize * 1.65f
+                        val badgeLeft = scoreText.x - bgWidth / 2f
+                        val badgeTop = scoreText.y - bgHeight * 0.75f
+
+                        // Outer Radiant Pink/Rose Glow
+                        drawRoundRect(
+                            color = Color(0xFFF43F5E).copy(alpha = alpha * 0.45f),
+                            topLeft = Offset(badgeLeft - 8f, badgeTop - 8f),
+                            size = androidx.compose.ui.geometry.Size(bgWidth + 16f, bgHeight + 16f),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(22f, 22f)
+                        )
+                        // Gradient Badge Background
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(
+                                listOf(
+                                    Color(0xFF881337).copy(alpha = alpha * 0.94f),
+                                    Color(0xFFE11D48).copy(alpha = alpha * 0.96f),
+                                    Color(0xFF4C0519).copy(alpha = alpha * 0.94f)
+                                )
+                            ),
+                            topLeft = Offset(badgeLeft, badgeTop),
+                            size = androidx.compose.ui.geometry.Size(bgWidth, bgHeight),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f, 18f)
+                        )
+                        // Golden Shimmering Border
+                        drawRoundRect(
+                            color = Color(0xFFFDE047).copy(alpha = alpha * 0.95f),
+                            topLeft = Offset(badgeLeft, badgeTop),
+                            size = androidx.compose.ui.geometry.Size(bgWidth, bgHeight),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f, 18f),
+                            style = Stroke(width = 2.5.dp.toPx())
+                        )
+
+                        textPaint.color = android.graphics.Color.WHITE
+                        textPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
+                        textPaint.textSize = baseSize
+                        drawContext.canvas.nativeCanvas.drawText(
+                            scoreText.text,
+                            scoreText.x,
+                            scoreText.y,
+                            textPaint
+                        )
+                    }
+                    2 -> {
+                        // TIER 2: ★ AWESOME (5-9 balls) ★
+                        val bgWidth = baseSize * scoreText.text.length * 0.50f + 28f
+                        val bgHeight = baseSize * 1.55f
+                        val badgeLeft = scoreText.x - bgWidth / 2f
+                        val badgeTop = scoreText.y - bgHeight * 0.75f
+
+                        // Amber / Golden Glow
+                        drawRoundRect(
+                            color = Color(0xFFF59E0B).copy(alpha = alpha * 0.35f),
+                            topLeft = Offset(badgeLeft - 5f, badgeTop - 5f),
+                            size = androidx.compose.ui.geometry.Size(bgWidth + 10f, bgHeight + 10f),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(16f, 16f)
+                        )
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(
+                                listOf(
+                                    Color(0xFF78350F).copy(alpha = alpha * 0.90f),
+                                    Color(0xFFD97706).copy(alpha = alpha * 0.94f),
+                                    Color(0xFF78350F).copy(alpha = alpha * 0.90f)
+                                )
+                            ),
+                            topLeft = Offset(badgeLeft, badgeTop),
+                            size = androidx.compose.ui.geometry.Size(bgWidth, bgHeight),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(14f, 14f)
+                        )
+                        drawRoundRect(
+                            color = Color(0xFFFDE68A).copy(alpha = alpha * 0.90f),
+                            topLeft = Offset(badgeLeft, badgeTop),
+                            size = androidx.compose.ui.geometry.Size(bgWidth, bgHeight),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(14f, 14f),
+                            style = Stroke(width = 2.dp.toPx())
+                        )
+
+                        textPaint.color = android.graphics.Color.WHITE
+                        textPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
+                        textPaint.textSize = baseSize
+                        drawContext.canvas.nativeCanvas.drawText(
+                            scoreText.text,
+                            scoreText.x,
+                            scoreText.y,
+                            textPaint
+                        )
+                    }
+                    else -> {
+                        // TIER 1: Standard Pop (3-4 balls)
+                        textPaint.color = scoreText.color.highlightColor.toArgb()
+                        textPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
+                        textPaint.textSize = baseSize
+                        drawContext.canvas.nativeCanvas.drawText(
+                            scoreText.text,
+                            scoreText.x,
+                            scoreText.y,
+                            textPaint
+                        )
+                    }
+                }
             }
         }
     }
@@ -569,45 +672,105 @@ private fun DrawScope.drawModernGlassBubble(
 }
 
 /**
- * Modern Laser Guide Aim Trajectory (Drawn on top of board bubbles for crystal-clear targeting)
+ * Professional Precision Aim Trajectory:
+ * - Ultra-clean, high-visibility luminous dots (saaf & sharp)
+ * - Smooth upward marching flow towards target
+ * - High-precision holographic targeting reticle with compass brackets & slot alignment
  */
 private fun DrawScope.drawAimTrajectory(
     trajectory: AimTrajectory,
     radius: Float,
     currentColor: BubbleColor,
-    engine: BubbleShooterEngine
+    engine: BubbleShooterEngine,
+    marchProgress: Float
 ) {
     val segments = trajectory.segments
     if (segments.size < 2) return
 
+    // Calculate total trajectory path length
+    val segmentLengths = mutableListOf<Float>()
+    var totalLength = 0f
     for (i in 0 until segments.size - 1) {
-        val p1 = segments[i]
-        val p2 = segments[i + 1]
-        val dist = hypot(p2.x - p1.x, p2.y - p1.y)
-        val steps = (dist / (radius * 0.52f)).toInt().coerceAtLeast(1)
+        val len = hypot(segments[i + 1].x - segments[i].x, segments[i + 1].y - segments[i].y)
+        segmentLengths.add(len)
+        totalLength += len
+    }
+    if (totalLength <= 0f) return
 
-        for (s in 0..steps) {
-            val t = s.toFloat() / steps
-            val dotX = p1.x + (p2.x - p1.x) * t
-            val dotY = p1.y + (p2.y - p1.y) * t
-            val dotRadius = radius * 0.16f * (1.0f - (t * 0.15f))
+    // Professional clean dot sizing and spacing
+    val dotRadius = 5.2.dp.toPx()
+    val dotSpacing = 22.dp.toPx()
 
-            // White crisp laser core
-            drawCircle(
-                color = Color.White.copy(alpha = 0.95f),
-                radius = dotRadius,
-                center = Offset(dotX, dotY)
-            )
-            // Vivid colored glow
-            drawCircle(
-                color = currentColor.primaryColor.copy(alpha = 0.75f),
-                radius = dotRadius * 1.8f,
-                center = Offset(dotX, dotY)
-            )
+    // Smooth continuous offset flowing UPWARDS from cannon towards target
+    val marchOffset = marchProgress * dotSpacing
+    var currentDist = marchOffset
+
+    while (currentDist < totalLength - (radius * 0.5f)) {
+        // Find corresponding segment
+        var accumulated = 0f
+        var segIdx = 0
+        var segProgress = 0f
+
+        for (i in segmentLengths.indices) {
+            val segLen = segmentLengths[i]
+            if (currentDist <= accumulated + segLen || i == segmentLengths.lastIndex) {
+                segIdx = i
+                segProgress = if (segLen > 0f) ((currentDist - accumulated) / segLen).coerceIn(0f, 1f) else 0f
+                break
+            }
+            accumulated += segLen
         }
+
+        val p1 = segments[segIdx]
+        val p2 = segments[segIdx + 1]
+        val dotX = p1.x + (p2.x - p1.x) * segProgress
+        val dotY = p1.y + (p2.y - p1.y) * segProgress
+
+        // 1. Soft clean neon bloom aura (zero muddiness)
+        drawCircle(
+            color = currentColor.primaryColor.copy(alpha = 0.35f),
+            radius = dotRadius * 1.6f,
+            center = Offset(dotX, dotY)
+        )
+
+        // 2. Solid vibrant colored bead shell
+        drawCircle(
+            color = currentColor.primaryColor,
+            radius = dotRadius,
+            center = Offset(dotX, dotY)
+        )
+
+        // 3. Ultra-clean brilliant white illuminated core
+        drawCircle(
+            color = Color.White,
+            radius = dotRadius * 0.62f,
+            center = Offset(dotX, dotY)
+        )
+
+        currentDist += dotSpacing
     }
 
-    // Landing ring indicator & ghost bubble in the exact grid slot where ball will lodge
+    // Draw glowing diamond reflection sparkles at wall bounce points
+    for (i in 1 until segments.size - 1) {
+        val bouncePt = segments[i]
+        drawCircle(
+            color = currentColor.primaryColor.copy(alpha = 0.5f),
+            radius = dotRadius * 2.2f,
+            center = bouncePt
+        )
+        drawCircle(
+            color = Color.White,
+            radius = dotRadius * 1.1f,
+            center = bouncePt
+        )
+        drawCircle(
+            color = currentColor.highlightColor,
+            radius = dotRadius * 0.55f,
+            center = bouncePt
+        )
+    }
+
+    // Professional High-Precision Target Reticle at Destination
     val targetSlot = trajectory.targetGridSlot
     val targetPos = if (targetSlot != null) {
         engine.getBubbleCenter(targetSlot)
@@ -616,34 +779,80 @@ private fun DrawScope.drawAimTrajectory(
     }
 
     if (targetPos != null) {
-        // Semi-transparent ghost preview bubble of current color
+        // 1. Target Grid Slot Guide (shows exact slot circle cleanly)
         drawCircle(
-            color = currentColor.primaryColor.copy(alpha = 0.55f),
-            radius = radius * 0.95f,
-            center = targetPos
-        )
-        // Outer pulsing laser targeting ring
-        drawCircle(
-            color = Color.White,
-            radius = radius * 1.05f,
-            center = targetPos,
-            style = Stroke(width = 2.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)))
-        )
-        drawCircle(
-            color = currentColor.glowColor.copy(alpha = 0.85f),
-            radius = radius * 1.15f,
-            center = targetPos,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-        // Bright target center bullseye
-        drawCircle(
-            color = Color.White,
-            radius = radius * 0.35f,
+            color = currentColor.primaryColor.copy(alpha = 0.18f),
+            radius = radius * 0.94f,
             center = targetPos
         )
         drawCircle(
-            color = currentColor.highlightColor,
-            radius = radius * 0.22f,
+            color = currentColor.highlightColor.copy(alpha = 0.45f),
+            radius = radius * 0.94f,
+            center = targetPos,
+            style = Stroke(
+                width = 1.4.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))
+            )
+        )
+
+        // 2. Professional Center Holographic Crosshair Reticle
+        val reticleRadius = 12.dp.toPx()
+        val tickStart = 11.dp.toPx()
+        val tickEnd = 16.dp.toPx()
+
+        // Outer reticle halo
+        drawCircle(
+            color = currentColor.glowColor.copy(alpha = 0.35f),
+            radius = reticleRadius * 1.35f,
+            center = targetPos
+        )
+        // Crisp White Reticle Ring
+        drawCircle(
+            color = Color.White,
+            radius = reticleRadius,
+            center = targetPos,
+            style = Stroke(width = 2.dp.toPx())
+        )
+
+        // 4 Precision Compass Tick Marks (North, South, East, West)
+        drawLine(
+            color = Color.White,
+            start = Offset(targetPos.x, targetPos.y - tickEnd),
+            end = Offset(targetPos.x, targetPos.y - tickStart),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = Color.White,
+            start = Offset(targetPos.x, targetPos.y + tickStart),
+            end = Offset(targetPos.x, targetPos.y + tickEnd),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = Color.White,
+            start = Offset(targetPos.x - tickEnd, targetPos.y),
+            end = Offset(targetPos.x - tickStart, targetPos.y),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = Color.White,
+            start = Offset(targetPos.x + tickStart, targetPos.y),
+            end = Offset(targetPos.x + tickEnd, targetPos.y),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+
+        // Central Illuminated Target Pip
+        drawCircle(
+            color = currentColor.primaryColor,
+            radius = 4.dp.toPx(),
+            center = targetPos
+        )
+        drawCircle(
+            color = Color.White,
+            radius = 2.dp.toPx(),
             center = targetPos
         )
     }
@@ -705,17 +914,17 @@ private fun DrawScope.drawModernCannon(
     val radius = engine.bubbleRadius
     val angleDegrees = aimTrajectory?.angleDegrees ?: -90f
 
-    // 1. Futuristic Turret Chassis Base
+    // 1. Futuristic Compact Turret Chassis Base
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(
-                currentColor.glowColor.copy(alpha = 0.45f),
+                currentColor.glowColor.copy(alpha = 0.40f),
                 Color.Transparent
             ),
             center = cannonPos,
-            radius = radius * 2.8f
+            radius = radius * 2.2f
         ),
-        radius = radius * 2.8f,
+        radius = radius * 2.2f,
         center = cannonPos
     )
 
@@ -728,30 +937,30 @@ private fun DrawScope.drawModernCannon(
                 Color(0xFF090D16)
             ),
             center = cannonPos,
-            radius = radius * 2.2f
+            radius = radius * 1.65f
         ),
-        radius = radius * 2.1f,
+        radius = radius * 1.6f,
         center = cannonPos
     )
     drawCircle(
         color = Color(0xFF475569),
-        radius = radius * 2.1f,
+        radius = radius * 1.6f,
         center = cannonPos,
-        style = Stroke(width = 2.5.dp.toPx())
+        style = Stroke(width = 2.dp.toPx())
     )
 
     // 2. Rotating Sleek Energy Barrel with Dynamic Recoil Kickback
     rotate(degrees = angleDegrees + 90f, pivot = cannonPos) {
-        val recoilOffset = radius * 0.42f * cannonRecoil.coerceIn(0f, 1f)
-        val barrelWidth = radius * (1.15f + 0.15f * cannonRecoil) // Squash & stretch
-        val barrelHeight = radius * (2.45f - 0.25f * cannonRecoil)
+        val recoilOffset = radius * 0.35f * cannonRecoil.coerceIn(0f, 1f)
+        val barrelWidth = radius * (1.05f + 0.12f * cannonRecoil) // Squash & stretch
+        val barrelHeight = radius * (1.95f - 0.20f * cannonRecoil)
         val barrelStartY = cannonPos.y + recoilOffset
         val barrelTipY = barrelStartY - barrelHeight
 
         val path = Path().apply {
             moveTo(cannonPos.x - (barrelWidth / 2f), barrelStartY)
-            lineTo(cannonPos.x - (barrelWidth * 0.35f), barrelTipY)
-            lineTo(cannonPos.x + (barrelWidth * 0.35f), barrelTipY)
+            lineTo(cannonPos.x - (barrelWidth * 0.32f), barrelTipY)
+            lineTo(cannonPos.x + (barrelWidth * 0.32f), barrelTipY)
             lineTo(cannonPos.x + (barrelWidth / 2f), barrelStartY)
             close()
         }
@@ -770,15 +979,15 @@ private fun DrawScope.drawModernCannon(
         drawPath(
             path = path,
             color = Color(0xFF64748B),
-            style = Stroke(width = 2.dp.toPx())
+            style = Stroke(width = 1.8.dp.toPx())
         )
 
         // Sleek neon muzzle tip
         drawLine(
             color = currentColor.primaryColor,
-            start = Offset(cannonPos.x - (barrelWidth * 0.3f), barrelTipY),
-            end = Offset(cannonPos.x + (barrelWidth * 0.3f), barrelTipY),
-            strokeWidth = 3.dp.toPx(),
+            start = Offset(cannonPos.x - (barrelWidth * 0.28f), barrelTipY),
+            end = Offset(cannonPos.x + (barrelWidth * 0.28f), barrelTipY),
+            strokeWidth = 2.5.dp.toPx(),
             cap = StrokeCap.Round
         )
 
@@ -789,14 +998,14 @@ private fun DrawScope.drawModernCannon(
                 // Expanding bright ring
                 drawCircle(
                     color = flash.color.highlightColor.copy(alpha = fAlpha),
-                    radius = radius * (0.8f + (1.2f * (1.0f - fAlpha))),
+                    radius = radius * (0.7f + (1.0f * (1.0f - fAlpha))),
                     center = Offset(cannonPos.x, barrelTipY),
-                    style = Stroke(width = 3.dp.toPx())
+                    style = Stroke(width = 2.5.dp.toPx())
                 )
                 // Flash core
                 drawCircle(
                     color = Color.White.copy(alpha = fAlpha),
-                    radius = radius * 0.5f * fAlpha,
+                    radius = radius * 0.45f * fAlpha,
                     center = Offset(cannonPos.x, barrelTipY)
                 )
             }
@@ -816,7 +1025,7 @@ private fun DrawScope.drawModernCannon(
     )
 
     // 4. Next Bubble Queue (Sleek pod on left with swap indicator)
-    val nextPos = Offset(cannonPos.x - (radius * 3.4f), cannonPos.y)
+    val nextPos = Offset(cannonPos.x - (radius * 2.8f), cannonPos.y)
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(
@@ -824,14 +1033,14 @@ private fun DrawScope.drawModernCannon(
                 Color(0xFF0F172A)
             ),
             center = nextPos,
-            radius = radius * 1.25f
+            radius = radius * 1.15f
         ),
-        radius = radius * 1.2f,
+        radius = radius * 1.1f,
         center = nextPos
     )
     drawCircle(
         color = Color(0xFF475569),
-        radius = radius * 1.2f,
+        radius = radius * 1.1f,
         center = nextPos,
         style = Stroke(width = 1.5.dp.toPx())
     )
@@ -845,13 +1054,13 @@ private fun DrawScope.drawModernCannon(
     val midPos = Offset((cannonPos.x + nextPos.x) / 2f, cannonPos.y)
     drawCircle(
         color = Color(0xFF0EA5E9),
-        radius = radius * 0.36f,
+        radius = radius * 0.32f,
         center = midPos
     )
     drawCircle(
         color = Color.White,
-        radius = radius * 0.36f,
+        radius = radius * 0.32f,
         center = midPos,
-        style = Stroke(width = 1.5.dp.toPx())
+        style = Stroke(width = 1.2.dp.toPx())
     )
 }

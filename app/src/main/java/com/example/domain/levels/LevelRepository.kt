@@ -7,8 +7,8 @@ import kotlin.random.Random
 
 object LevelRepository {
     const val TOTAL_LEVELS = 300
-    const val MAX_COLS_EVEN = 8
-    const val MAX_COLS_ODD = 7
+    const val MAX_COLS_EVEN = 10
+    const val MAX_COLS_ODD = 9
 
     private val cachedLevels = mutableMapOf<Int, GameLevel>()
 

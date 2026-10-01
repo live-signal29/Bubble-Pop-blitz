@@ -193,7 +193,8 @@ fun GameScreen(
     LaunchedEffect(Unit) {
         var lastTime = System.nanoTime()
         while (isActive) {
-            val hasActivePhysics = projectile != null ||
+            val hasActivePhysics = isAiming ||
+                    projectile != null ||
                     fallingBubbles.isNotEmpty() ||
                     poppingBubbles.isNotEmpty() ||
                     particles.isNotEmpty() ||
@@ -281,16 +282,38 @@ fun GameScreen(
 
                         if (matchedPositions.size >= 3) {
                             comboCount++
+                            val matchCount = matchedPositions.size
                             val comboMultiplier = if (comboCount > 1) comboCount else 1
-                            val points = matchedPositions.size * 100 * comboMultiplier
+                            val points = matchCount * 100 * comboMultiplier
                             currentScore += points
-                            soundManager.playPop()
+
+                            // Distinct Sound & Animation Tier:
+                            // Tier 1: 3-4 Bubbles (Classic Pop)
+                            // Tier 2: 5-9 Bubbles (Awesome Combo Cascade)
+                            // Tier 3: 10+ Bubbles (Spectacular Mega Pop Fanfare)
+                            val hitTier = when {
+                                matchCount >= 10 -> 3
+                                matchCount >= 5 -> 2
+                                else -> 1
+                            }
+
+                            when (hitTier) {
+                                3 -> soundManager.playHit10()
+                                2 -> soundManager.playHit5()
+                                else -> soundManager.playHit3()
+                            }
                             if (comboCount > 1) {
                                 soundManager.playCombo(comboCount)
                             }
 
                             var sumX = 0f
                             var sumY = 0f
+
+                            val particleMultiplier = when (hitTier) {
+                                3 -> 18 // Dense fireworks explosion
+                                2 -> 12 // Sparkling crystal burst
+                                else -> 7 // Crisp snappy pop
+                            }
 
                             matchedPositions.forEach { matchPos ->
                                 val removedBubble = boardBubbles.remove(matchPos)
@@ -310,9 +333,9 @@ fun GameScreen(
                                 )
 
                                 // Spawn shattered crystal shards and neon spark particles
-                                for (i in 0..7) {
+                                for (i in 0 until particleMultiplier) {
                                     val angle = (Math.random() * 2 * Math.PI).toFloat()
-                                    val spd = (Math.random() * 6.5 + 3.0).toFloat()
+                                    val spd = (Math.random() * (if (hitTier == 3) 9.5 else 6.5) + 3.0).toFloat()
                                     particles.add(
                                         BubbleParticle(
                                             x = c.x,
@@ -320,29 +343,39 @@ fun GameScreen(
                                             vx = cos(angle) * spd,
                                             vy = sin(angle) * spd,
                                             color = removedBubble?.color ?: proj.color,
-                                            size = (Math.random() * 7.0 + 4.0).toFloat(),
+                                            size = (Math.random() * (if (hitTier == 3) 8.5 else 6.0) + 3.5).toFloat(),
                                             alpha = 1f,
                                             life = 1f,
                                             isShard = (i % 2 == 0),
                                             rotation = (Math.random() * 360).toFloat(),
-                                            vr = (Math.random() * 16.0 - 8.0).toFloat()
+                                            vr = (Math.random() * 20.0 - 10.0).toFloat()
                                         )
                                     )
                                 }
                             }
 
-                            // Spawn floating score text at match center
+                            // Spawn floating score text at match center with distinct Tier styling
                             if (matchedPositions.isNotEmpty()) {
                                 val avgX = sumX / matchedPositions.size
                                 val avgY = sumY / matchedPositions.size
-                                val scoreMsg = if (comboCount > 1) "+$points COMBO x$comboCount!" else "+$points"
+                                val scoreMsg = when {
+                                    hitTier == 3 -> if (comboCount > 1) "💥 MEGA POP! +$points (x$comboCount) 💥" else "💥 MEGA POP! +$points 💥"
+                                    hitTier == 2 -> if (comboCount > 1) "★ AWESOME! +$points (x$comboCount) ★" else "★ AWESOME! +$points ★"
+                                    else -> if (comboCount > 1) "+$points POP! x$comboCount" else "+$points POP!"
+                                }
+                                val textScale = when (hitTier) {
+                                    3 -> 1.85f
+                                    2 -> 1.45f
+                                    else -> 1.15f
+                                }
                                 floatingScores.add(
                                     FloatingScoreText(
                                         x = avgX,
-                                        y = avgY - 10f,
+                                        y = avgY - 15f,
                                         text = scoreMsg,
                                         color = proj.color,
-                                        scale = if (comboCount > 1) 1.25f else 1.0f
+                                        scale = textScale,
+                                        tier = hitTier
                                     )
                                 )
                             }

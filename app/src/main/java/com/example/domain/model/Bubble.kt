@@ -57,7 +57,8 @@ data class FloatingScoreText(
     var alpha: Float = 1.0f,
     var scale: Float = 1.0f,
     var vy: Float = -2.2f,
-    var life: Float = 1.0f
+    var life: Float = 1.0f,
+    val tier: Int = 1 // 1: 3-4 Pop, 2: 5-9 Awesome, 3: 10+ Mega Pop
 )
 
 data class MuzzleFlash(

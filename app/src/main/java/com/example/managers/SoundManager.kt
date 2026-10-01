@@ -7,7 +7,11 @@ import android.media.AudioTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Arrays
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
@@ -17,25 +21,35 @@ class SoundManager(private val context: Context) {
 
     var isSoundEnabled: Boolean = true
     var isMusicEnabled: Boolean = true
-        set(value) {
-            field = value
-            if (value) startMusic() else stopMusic()
-        }
 
     private val sampleRate = 22050
 
-    // Pre-allocated AudioTracks for zero-latency instant playback
-    private var shootTrack: AudioTrack? = null
-    private var bounceTrack: AudioTrack? = null
-    private var clickTrack: AudioTrack? = null
-    private var rewardTrack: AudioTrack? = null
-    private var winTrack: AudioTrack? = null
-    private var loseTrack: AudioTrack? = null
-    private var fallingTrack: AudioTrack? = null
-    private val popTracks = mutableListOf<AudioTrack>()
-    private val comboTracks = mutableListOf<AudioTrack>()
-    private var musicTrack: AudioTrack? = null
+    private class ActiveSound(
+        val samples: ShortArray,
+        var cursor: Int = 0,
+        val volume: Float = 1.0f
+    )
 
+    private val activeSounds = ConcurrentLinkedQueue<ActiveSound>()
+    private var mixerJob: Job? = null
+    private var audioTrack: AudioTrack? = null
+
+    // Pre-synthesized PCM buffers
+    private var shootPcm: ShortArray = ShortArray(0)
+    private var bouncePcm: ShortArray = ShortArray(0)
+    private var clickPcm: ShortArray = ShortArray(0)
+    private var rewardPcm: ShortArray = ShortArray(0)
+    private var winPcm: ShortArray = ShortArray(0)
+    private var losePcm: ShortArray = ShortArray(0)
+    private var fallingPcm: ShortArray = ShortArray(0)
+    private var hit3Pcm: ShortArray = ShortArray(0)
+    private var hit5Pcm: ShortArray = ShortArray(0)
+    private var hit10Pcm: ShortArray = ShortArray(0)
+    private var popPcmList: List<ShortArray> = emptyList()
+    private var comboPcmList: List<ShortArray> = emptyList()
+    private var musicPcm: ShortArray = ShortArray(0)
+
+    private var musicCursor = 0
     private var nextPopIdx = 0
     private var isInitialized = false
 
@@ -47,70 +61,48 @@ class SoundManager(private val context: Context) {
 
     private fun initAudioEngine() {
         try {
-            // 1. Generate Shoot Sound (Punchy mechanical thud + futuristic plasma whoosh)
-            val shootPcm = generateShootPcm()
-            shootTrack = createStaticTrack(shootPcm)
+            // Synthesize all sound effects in memory (zero disk I/O, zero Codec2/MediaCodec)
+            shootPcm = generateShootPcm()
+            bouncePcm = generateBouncePcm()
+            clickPcm = generateClickPcm()
+            rewardPcm = generateRewardPcm()
+            winPcm = generateWinPcm()
+            losePcm = generateLosePcm()
+            fallingPcm = generateFallingPcm()
+            hit3Pcm = generateHit3Pcm()
+            hit5Pcm = generateHit5Pcm()
+            hit10Pcm = generateHit10Pcm()
 
-            // 2. Generate Bounce Sound (Rubbery tactile tick)
-            val bouncePcm = generateBouncePcm()
-            bounceTrack = createStaticTrack(bouncePcm)
-
-            // 3. Generate Click Sound (Crisp UI tap)
-            val clickPcm = generateClickPcm()
-            clickTrack = createStaticTrack(clickPcm)
-
-            // 4. Generate Reward Sound (Cascading crystal coin chimes)
-            val rewardPcm = generateRewardPcm()
-            rewardTrack = createStaticTrack(rewardPcm)
-
-            // 5. Generate Win Fanfare (Triumphant victory arpeggio)
-            val winPcm = generateWinPcm()
-            winTrack = createStaticTrack(winPcm)
-
-            // 6. Generate Lose Sound (Dissonant descending tone)
-            val losePcm = generateLosePcm()
-            loseTrack = createStaticTrack(losePcm)
-
-            // 7. Generate Falling Bubbles Sound (Whoosh cascade)
-            val fallPcm = generateFallingPcm()
-            fallingTrack = createStaticTrack(fallPcm)
-
-            // 8. Generate Pop Tracks (Multiple pitches for rapid overlapping pops)
-            val popPitches = listOf(0.9f, 1.0f, 1.15f, 1.3f, 1.5f)
-            popPitches.forEach { pitch ->
-                val popPcm = generatePopPcm(pitch)
-                createStaticTrack(popPcm)?.let { popTracks.add(it) }
+            val pops = mutableListOf<ShortArray>()
+            listOf(0.92f, 1.0f, 1.12f, 1.25f, 1.4f).forEach { pitch ->
+                pops.add(generatePopPcm(pitch))
             }
+            popPcmList = pops
 
-            // 9. Generate Combo Tracks (Joyful ascending chime chords)
+            val combos = mutableListOf<ShortArray>()
             for (level in 1..5) {
-                val comboPcm = generateComboPcm(level)
-                createStaticTrack(comboPcm)?.let { comboTracks.add(it) }
+                combos.add(generateComboPcm(level))
             }
+            comboPcmList = combos
 
-            // 10. Generate Upbeat Bubbly Arcade Music (16-second seamless loop)
-            val musicPcm = generateCatchyArcadeMusicPcm()
-            val totalFrames = musicPcm.size
-            val mTrack = createStaticTrack(musicPcm)
-            if (mTrack != null && totalFrames > 0) {
-                try {
-                    mTrack.setLoopPoints(0, totalFrames, -1) // Loop forever seamlessly
-                } catch (_: Exception) {}
-                musicTrack = mTrack
-                if (isMusicEnabled) {
-                    try {
-                        mTrack.play()
-                    } catch (_: Exception) {}
-                }
-            }
+            // 16-second seamless looping music synthesized in memory
+            musicPcm = generateCatchyArcadeMusicPcm()
 
             isInitialized = true
+
+            // Start single shared streaming AudioTrack mixer
+            startAudioMixer()
         } catch (_: Exception) {}
     }
 
-    private fun createStaticTrack(samples: ShortArray): AudioTrack? {
-        return try {
-            val bufferSize = samples.size * 2
+    private fun startAudioMixer() {
+        try {
+            val minBuf = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufferSize = minBuf.coerceAtLeast(2048)
             val track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -126,116 +118,132 @@ class SoundManager(private val context: Context) {
                         .build()
                 )
                 .setBufferSizeInBytes(bufferSize)
-                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            track.write(samples, 0, samples.size)
-            track
-        } catch (_: Exception) {
-            null
-        }
+            track.play()
+            audioTrack = track
+
+            val chunkSize = 512 // ~23ms of audio per write
+            val chunk = ShortArray(chunkSize)
+
+            mixerJob = scope.launch {
+                while (isActive) {
+                    val hasFx = isSoundEnabled && activeSounds.isNotEmpty()
+                    val hasMusic = isMusicEnabled && musicPcm.isNotEmpty()
+
+                    if (!hasFx && !hasMusic) {
+                        Arrays.fill(chunk, 0.toShort())
+                        track.write(chunk, 0, chunkSize)
+                        delay(20)
+                        continue
+                    }
+
+                    for (i in 0 until chunkSize) {
+                        var sum = 0
+
+                        // 1. Mix active Sound Effects
+                        if (hasFx) {
+                            val iter = activeSounds.iterator()
+                            while (iter.hasNext()) {
+                                val fx = iter.next()
+                                if (fx.cursor < fx.samples.size) {
+                                    sum += (fx.samples[fx.cursor++] * fx.volume).toInt()
+                                } else {
+                                    iter.remove()
+                                }
+                            }
+                        }
+
+                        // 2. Mix Background Music (soft ambient volume)
+                        if (hasMusic) {
+                            sum += (musicPcm[musicCursor] * 0.28f).toInt()
+                            musicCursor = (musicCursor + 1) % musicPcm.size
+                        }
+
+                        chunk[i] = sum.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                    }
+
+                    track.write(chunk, 0, chunkSize)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
-    private fun playStaticTrack(track: AudioTrack?) {
-        if (!isSoundEnabled || track == null) return
-        scope.launch {
-            try {
-                track.stop()
-                track.reloadStaticData()
-                track.play()
-            } catch (_: Exception) {}
-        }
+    private fun playPcm(samples: ShortArray, volume: Float = 1.0f) {
+        if (!isSoundEnabled || samples.isEmpty()) return
+        activeSounds.add(ActiveSound(samples, 0, volume))
     }
 
     fun playShoot() {
-        playStaticTrack(shootTrack)
+        playPcm(shootPcm, 0.95f)
     }
 
     fun playBounce() {
-        playStaticTrack(bounceTrack)
+        playPcm(bouncePcm, 0.65f)
     }
 
     fun playClick() {
-        playStaticTrack(clickTrack)
+        playPcm(clickPcm, 0.70f)
     }
 
     fun playReward() {
-        playStaticTrack(rewardTrack)
+        playPcm(rewardPcm, 0.85f)
     }
 
     fun playWin() {
-        playStaticTrack(winTrack)
+        playPcm(winPcm, 0.90f)
     }
 
     fun playLose() {
-        playStaticTrack(loseTrack)
+        playPcm(losePcm, 0.70f)
     }
 
     fun playFalling() {
-        playStaticTrack(fallingTrack)
+        playPcm(fallingPcm, 0.60f)
     }
 
     fun playPop(pitchMultiplier: Float = 1.0f) {
-        if (!isSoundEnabled || popTracks.isEmpty()) return
-        scope.launch {
-            try {
-                val track = popTracks[nextPopIdx % popTracks.size]
-                nextPopIdx = (nextPopIdx + 1) % popTracks.size
-                track.stop()
-                track.reloadStaticData()
-                track.play()
-            } catch (_: Exception) {}
-        }
+        if (!isSoundEnabled || popPcmList.isEmpty()) return
+        val idx = (nextPopIdx++) % popPcmList.size
+        playPcm(popPcmList[idx], 0.88f)
     }
 
     fun playCombo(comboLevel: Int) {
-        if (!isSoundEnabled || comboTracks.isEmpty()) return
-        scope.launch {
-            try {
-                val index = (comboLevel - 1).coerceIn(0, comboTracks.size - 1)
-                val track = comboTracks[index]
-                track.stop()
-                track.reloadStaticData()
-                track.play()
-            } catch (_: Exception) {}
-        }
+        if (!isSoundEnabled || comboPcmList.isEmpty()) return
+        val index = (comboLevel - 1).coerceIn(0, comboPcmList.size - 1)
+        playPcm(comboPcmList[index], 0.85f)
+    }
+
+    fun playHit3() {
+        playPcm(hit3Pcm, 0.88f)
+    }
+
+    fun playHit5() {
+        playPcm(hit5Pcm, 0.95f)
+    }
+
+    fun playHit10() {
+        playPcm(hit10Pcm, 1.0f)
     }
 
     fun startMusic() {
-        if (!isMusicEnabled) return
-        try {
-            musicTrack?.let { track ->
-                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                    track.play()
-                }
-            }
-        } catch (_: Exception) {}
+        isMusicEnabled = true
     }
 
     fun stopMusic() {
-        try {
-            musicTrack?.let { track ->
-                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    track.pause()
-                }
-            }
-        } catch (_: Exception) {}
+        isMusicEnabled = false
     }
 
     fun release() {
-        stopMusic()
+        isMusicEnabled = false
+        mixerJob?.cancel()
         try {
-            shootTrack?.release()
-            bounceTrack?.release()
-            clickTrack?.release()
-            rewardTrack?.release()
-            winTrack?.release()
-            loseTrack?.release()
-            fallingTrack?.release()
-            popTracks.forEach { it.release() }
-            comboTracks.forEach { it.release() }
-            musicTrack?.release()
+            audioTrack?.stop()
+            audioTrack?.release()
+            audioTrack = null
         } catch (_: Exception) {}
+        activeSounds.clear()
     }
 
     // ==========================================
@@ -243,41 +251,49 @@ class SoundManager(private val context: Context) {
     // ==========================================
 
     /**
-     * Satisfying juicy bubble pop:
-     * - Sharp attack click (transient burst)
-     * - Rapid downward pitch slide (950Hz -> 250Hz) with resonant cavity
+     * Modern Juicy ASMR Bubble Pop:
+     * - Smooth 3ms acoustic attack (no harsh static click)
+     * - Rapid non-linear pitch drop (740Hz -> 250Hz) with resonant water cavity
+     * - Hollow secondary harmonic overtone for genuine water droplet/bubble suction release
      */
     private fun generatePopPcm(pitchMultiplier: Float): ShortArray {
-        val durationMs = 85
+        val durationMs = 70
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
-        val baseFreq = 880.0 * pitchMultiplier
+        val startFreq = 740.0 * pitchMultiplier
+        val endFreq = 240.0 * pitchMultiplier
 
         for (i in 0 until numSamples) {
             val progress = i.toDouble() / numSamples
             val t = i.toDouble() / sampleRate
 
-            // Downward pitch drop
-            val freq = baseFreq * (1.0 - progress * 0.72)
-            // Exponential decay envelope
-            val env = exp(-progress * 6.5)
+            // Smooth cosine attack (first 3ms) prevents static click
+            val attack = if (t < 0.003) sin((t / 0.003) * (PI / 2.0)) else 1.0
 
-            // Attack transient tick in first 4ms
-            val click = if (i < (sampleRate * 0.004)) (Math.random() * 2.0 - 1.0) * 0.4 else 0.0
+            // Non-linear downward pitch curve (fast drop then settle)
+            val freq = endFreq + (startFreq - endFreq) * (1.0 - progress) * (1.0 - progress)
+            // Exponential volume envelope with natural acoustic decay
+            val env = attack * exp(-progress * 7.5)
 
-            // Multi-harmonic bubble body (primary sine + cavity overtone)
-            val body = sin(2.0 * PI * freq * t) * 0.7 + sin(4.0 * PI * freq * t) * 0.25
-            val mixed = (body * env + click) * Short.MAX_VALUE * 0.65
+            // Resonant cavity harmonics: fundamental + hollow 2nd overtone + soft body sub
+            val fundamental = sin(2.0 * PI * freq * t)
+            val cavity = sin(4.0 * PI * freq * t) * 0.28
+            val subBody = sin(2.0 * PI * (freq * 0.5) * t) * 0.15
+
+            val mixed = (fundamental * 0.75 + cavity + subBody) * env * Short.MAX_VALUE * 0.72
             samples[i] = mixed.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Mechanical shooter thump + futuristic energetic plasma whoosh
+     * Professional Organic Slingshot / Bubble Launcher Thock:
+     * - Tight, snappy acoustic slingshot rubber snap (360Hz -> 95Hz)
+     * - Warm organic pneumatic body resonance with zero synthetic laser whine
+     * - Tactile, punchy, and satisfying for rapid arcade firing
      */
     private fun generateShootPcm(): ShortArray {
-        val durationMs = 110
+        val durationMs = 60
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
@@ -285,71 +301,82 @@ class SoundManager(private val context: Context) {
             val progress = i.toDouble() / numSamples
             val t = i.toDouble() / sampleRate
 
-            // Low thump (180Hz -> 50Hz)
-            val thumpFreq = 180.0 * (1.0 - progress * 0.7)
-            val thumpEnv = exp(-progress * 10.0)
-            val thump = sin(2.0 * PI * thumpFreq * t) * thumpEnv * 0.65
+            // Fast smooth 1.5ms acoustic attack
+            val attack = if (t < 0.0015) sin((t / 0.0015) * (PI / 2.0)) else 1.0
 
-            // High plasma whoosh (1200Hz -> 400Hz)
-            val whooshFreq = 1200.0 * (1.0 - progress * 0.6)
-            val whooshEnv = (1.0 - progress) * (1.0 - progress) * 0.35
-            val whoosh = sin(2.0 * PI * whooshFreq * t) * whooshEnv
+            // Rapid non-linear pitch drop for rubber snap (380Hz down to 95Hz)
+            val dropProgress = (1.0 - progress) * (1.0 - progress) * (1.0 - progress)
+            val freq = 95.0 + 285.0 * dropProgress
 
-            val sample = ((thump + whoosh) * Short.MAX_VALUE * 0.6).toInt()
-            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            // Tight acoustic envelope
+            val env = attack * exp(-progress * 12.0)
+
+            // Primary punch + cavity overtone + sub body
+            val fundamental = sin(2.0 * PI * freq * t) * 0.72
+            val cavity = sin(4.0 * PI * freq * t) * 0.22
+            val subThump = sin(2.0 * PI * (freq * 0.5) * t) * 0.18
+
+            // Soft pneumatic release puff (air cushion)
+            val airPuff = sin(2.0 * PI * 380.0 * t) * exp(-progress * 16.0) * 0.15
+
+            val sample = ((fundamental + cavity + subThump) * env + airPuff) * Short.MAX_VALUE * 0.85
+            samples[i] = sample.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Snappy rubber wall bounce
+     * Modern Soft Tactile Rubber Bounce (zero harsh click)
      */
     private fun generateBouncePcm(): ShortArray {
-        val durationMs = 45
+        val durationMs = 38
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
         for (i in 0 until numSamples) {
             val progress = i.toDouble() / numSamples
             val t = i.toDouble() / sampleRate
-            val env = exp(-progress * 14.0)
-            val sample = (sin(2.0 * PI * 480.0 * t) * env * Short.MAX_VALUE * 0.4).toInt()
+            val attack = if (t < 0.003) sin((t / 0.003) * (PI / 2.0)) else 1.0
+            val env = attack * exp(-progress * 16.0)
+            val freq = 290.0 * (1.0 - progress * 0.3)
+            val sample = (sin(2.0 * PI * freq * t) * env * Short.MAX_VALUE * 0.45).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Tactile UI click
+     * Modern Tactile UI Tap Click
      */
     private fun generateClickPcm(): ShortArray {
-        val durationMs = 20
+        val durationMs = 18
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
         for (i in 0 until numSamples) {
             val progress = i.toDouble() / numSamples
             val t = i.toDouble() / sampleRate
-            val env = exp(-progress * 20.0)
-            val sample = (sin(2.0 * PI * 1400.0 * t) * env * Short.MAX_VALUE * 0.35).toInt()
+            val env = exp(-progress * 22.0)
+            val sample = (sin(2.0 * PI * 1350.0 * t) * env * Short.MAX_VALUE * 0.40).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Sparkling coin cascade reward sound
+     * Sparkling Coin / Reward Bell Chime
      */
     private fun generateRewardPcm(): ShortArray {
-        val durationMs = 420
+        val durationMs = 450
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
-        // 3 staggered sparkling bell pings: 1318Hz (E6), 1567Hz (G6), 2093Hz (C7)
+        // Staggered crystalline FM bells: E6, G#6, B6, E7
         val pings = listOf(
-            Triple(0.00, 1318.51, 0.4),
-            Triple(0.10, 1567.98, 0.45),
-            Triple(0.20, 2093.00, 0.55)
+            Triple(0.00, 1318.51, 0.40),
+            Triple(0.08, 1661.22, 0.45),
+            Triple(0.16, 1975.53, 0.50),
+            Triple(0.24, 2637.02, 0.65)
         )
 
         for (i in 0 until numSamples) {
@@ -359,87 +386,88 @@ class SoundManager(private val context: Context) {
             for ((startT, freq, amp) in pings) {
                 if (t >= startT) {
                     val dt = t - startT
-                    val env = exp(-dt * 12.0)
-                    // Bell tone: fundamental + bright shimmer overtone
-                    val tone = sin(2.0 * PI * freq * dt) * 0.7 + sin(2.0 * PI * (freq * 2.76) * dt) * 0.3
+                    val env = exp(-dt * 10.0)
+                    // FM glass overtone
+                    val tone = sin(2.0 * PI * freq * dt) * 0.72 +
+                            sin(2.0 * PI * (freq * 2.76) * dt) * 0.22 +
+                            sin(2.0 * PI * (freq * 4.0) * dt) * 0.06
                     sum += tone * env * amp
                 }
             }
 
-            val sample = (sum * Short.MAX_VALUE * 0.7).toInt()
+            val sample = (sum * Short.MAX_VALUE * 0.68).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Triumphant level victory fanfare
+     * Triumphant Victory Fanfare
      */
     private fun generateWinPcm(): ShortArray {
-        val durationMs = 600
+        val durationMs = 650
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
-        // Fanfare chord tones: C5, E5, G5, C6 (staggered)
         val notes = listOf(
-            Triple(0.00, 523.25, 0.35),
-            Triple(0.09, 659.25, 0.40),
-            Triple(0.18, 783.99, 0.45),
-            Triple(0.28, 1046.50, 0.65)
+            Triple(0.00, 523.25, 0.40), // C5
+            Triple(0.10, 659.25, 0.42), // E5
+            Triple(0.20, 783.99, 0.45), // G5
+            Triple(0.30, 1046.50, 0.65) // C6
         )
 
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
             var sum = 0.0
 
+            for ((startT, freq, amp) in notes) {
+                if (t >= startT) {
+                    val dt = t - startT
+                    val env = exp(-dt * 5.5)
+                    val tone = sin(2.0 * PI * freq * dt) * 0.70 + sin(4.0 * PI * freq * dt) * 0.25 + sin(6.0 * PI * freq * dt) * 0.05
+                    sum += tone * env * amp
+                }
+            }
+
+            val sample = (sum * Short.MAX_VALUE * 0.62).toInt()
+            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return samples
+    }
+
+    /**
+     * Level Defeat Descending Chime
+     */
+    private fun generateLosePcm(): ShortArray {
+        val durationMs = 450
+        val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
+        val samples = ShortArray(numSamples)
+
+        val notes = listOf(
+            Triple(0.00, 440.0, 0.40),
+            Triple(0.10, 392.0, 0.42),
+            Triple(0.20, 349.2, 0.45),
+            Triple(0.30, 293.6, 0.50)
+        )
+
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / sampleRate
+            var sum = 0.0
             for ((startT, freq, amp) in notes) {
                 if (t >= startT) {
                     val dt = t - startT
                     val env = exp(-dt * 6.5)
-                    val tone = sin(2.0 * PI * freq * dt) * 0.75 + sin(4.0 * PI * freq * dt) * 0.25
-                    sum += tone * env * amp
-                }
-            }
-
-            val sample = (sum * Short.MAX_VALUE * 0.6).toInt()
-            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-        }
-        return samples
-    }
-
-    /**
-     * Lose descending chime
-     */
-    private fun generateLosePcm(): ShortArray {
-        val durationMs = 500
-        val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
-        val samples = ShortArray(numSamples)
-
-        val notes = listOf(
-            Triple(0.00, 440.0, 0.4),
-            Triple(0.12, 392.0, 0.4),
-            Triple(0.24, 349.2, 0.45),
-            Triple(0.36, 293.6, 0.5)
-        )
-
-        for (i in 0 until numSamples) {
-            val t = i.toDouble() / sampleRate
-            var sum = 0.0
-            for ((startT, freq, amp) in notes) {
-                if (t >= startT) {
-                    val dt = t - startT
-                    val env = exp(-dt * 7.0)
                     sum += sin(2.0 * PI * freq * dt) * env * amp
                 }
             }
-            val sample = (sum * Short.MAX_VALUE * 0.5).toInt()
+            val sample = (sum * Short.MAX_VALUE * 0.52).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Falling bubbles woosh cascade
+     * Falling Bubbles Soft Whoosh Cascade
      */
     private fun generateFallingPcm(): ShortArray {
         val durationMs = 180
@@ -449,23 +477,22 @@ class SoundManager(private val context: Context) {
         for (i in 0 until numSamples) {
             val progress = i.toDouble() / numSamples
             val t = i.toDouble() / sampleRate
-            val freq = 550.0 * (1.0 - progress * 0.55)
-            val env = exp(-progress * 5.0)
-            val sample = (sin(2.0 * PI * freq * t) * env * Short.MAX_VALUE * 0.4).toInt()
+            val freq = 480.0 * (1.0 - progress * 0.50)
+            val env = exp(-progress * 4.5)
+            val sample = (sin(2.0 * PI * freq * t) * env * Short.MAX_VALUE * 0.42).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
         return samples
     }
 
     /**
-     * Combo chime arpeggios
+     * Combo Chime Arpeggios (Modern Bell Shimmer)
      */
     private fun generateComboPcm(level: Int): ShortArray {
-        val durationMs = 240
+        val durationMs = 260
         val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
         val samples = ShortArray(numSamples)
 
-        // Musical chord progression for combos: C, E, G, B, D, High C
         val baseFreqs = listOf(523.25, 659.25, 783.99, 987.77, 1174.66, 1318.51)
         val noteIdx = (level - 1).coerceIn(0, baseFreqs.size - 2)
         val f1 = baseFreqs[noteIdx]
@@ -473,11 +500,11 @@ class SoundManager(private val context: Context) {
 
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
-            val env1 = exp(-t * 9.0)
-            val env2 = if (t >= 0.05) exp(-(t - 0.05) * 8.0) else 0.0
+            val env1 = exp(-t * 8.0)
+            val env2 = if (t >= 0.05) exp(-(t - 0.05) * 7.5) else 0.0
 
-            val tone1 = sin(2.0 * PI * f1 * t) * env1 * 0.5
-            val tone2 = if (t >= 0.05) sin(2.0 * PI * f2 * (t - 0.05)) * env2 * 0.5 else 0.0
+            val tone1 = (sin(2.0 * PI * f1 * t) * 0.75 + sin(4.0 * PI * f1 * t) * 0.25) * env1 * 0.5
+            val tone2 = if (t >= 0.05) (sin(2.0 * PI * f2 * (t - 0.05)) * 0.75 + sin(4.0 * PI * f2 * (t - 0.05)) * 0.25) * env2 * 0.5 else 0.0
 
             val sample = ((tone1 + tone2) * Short.MAX_VALUE * 0.65).toInt()
             samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
@@ -582,5 +609,145 @@ class SoundManager(private val context: Context) {
         }
 
         return buffer
+    }
+
+    /**
+     * Hit 3 Bubbles: Rapid, succulent, juicy ASMR triplet bubble pop
+     */
+    private fun generateHit3Pcm(): ShortArray {
+        val durationMs = 175
+        val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
+        val samples = ShortArray(numSamples)
+
+        val pops = listOf(
+            Triple(0.000, 680.0, 0.45),
+            Triple(0.045, 860.0, 0.55),
+            Triple(0.090, 1100.0, 0.65)
+        )
+
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / sampleRate
+            var sum = 0.0
+
+            for ((startT, baseFreq, amp) in pops) {
+                if (t >= startT) {
+                    val dt = t - startT
+                    val progress = (dt / 0.065).coerceIn(0.0, 1.0)
+                    val attack = if (dt < 0.003) sin((dt / 0.003) * (PI / 2.0)) else 1.0
+                    val freq = 240.0 + (baseFreq - 240.0) * (1.0 - progress) * (1.0 - progress)
+                    val env = attack * exp(-progress * 8.0)
+
+                    val tone = sin(2.0 * PI * freq * dt) * 0.75 +
+                            sin(4.0 * PI * freq * dt) * 0.25 +
+                            sin(2.0 * PI * (freq * 0.5) * dt) * 0.15
+                    sum += tone * env * amp
+                }
+            }
+
+            val sample = (sum * Short.MAX_VALUE * 0.72).toInt()
+            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return samples
+    }
+
+    /**
+     * Hit 5 Bubbles: "AWESOME!"
+     * Warm sub-bass punch + ascending crystalline 5-tone FM bell cascade (C5, E5, G5, B5, E6)
+     */
+    private fun generateHit5Pcm(): ShortArray {
+        val durationMs = 320
+        val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
+        val samples = ShortArray(numSamples)
+
+        val chimes = listOf(
+            Triple(0.000, 523.25, 0.38), // C5
+            Triple(0.045, 659.25, 0.42), // E5
+            Triple(0.090, 783.99, 0.46), // G5
+            Triple(0.135, 987.77, 0.52), // B5
+            Triple(0.180, 1318.51, 0.68) // E6
+        )
+
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / sampleRate
+            var sum = 0.0
+
+            // Warm subtle sub-bass tap at start
+            if (t < 0.09) {
+                val subFreq = 95.0 * (1.0 - (t / 0.09) * 0.5)
+                val subEnv = exp(-(t / 0.09) * 7.0)
+                sum += sin(2.0 * PI * subFreq * t) * subEnv * 0.50
+            }
+
+            for ((startT, freq, amp) in chimes) {
+                if (t >= startT) {
+                    val dt = t - startT
+                    val env = exp(-dt * 9.5)
+                    // High-end physical glass / crystal FM bell timbre
+                    val tone = sin(2.0 * PI * freq * dt) * 0.70 +
+                            sin(2.0 * PI * (freq * 2.76) * dt) * 0.22 +
+                            sin(2.0 * PI * (freq * 4.0) * dt) * 0.08
+                    sum += tone * env * amp
+                }
+            }
+
+            val sample = (sum * Short.MAX_VALUE * 0.68).toInt()
+            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return samples
+    }
+
+    /**
+     * Hit 10+ Bubbles: "MEGA POP! / SPECTACULAR!"
+     * Euphoric Celebration: Warm sub boom + grand 6-tone victory chime chord + sparkling celestial shimmer
+     */
+    private fun generateHit10Pcm(): ShortArray {
+        val durationMs = 550
+        val numSamples = (sampleRate * (durationMs / 1000.0)).toInt()
+        val samples = ShortArray(numSamples)
+
+        val notes = listOf(
+            Triple(0.000, 523.25, 0.40), // C5
+            Triple(0.045, 659.25, 0.42), // E5
+            Triple(0.090, 783.99, 0.46), // G5
+            Triple(0.135, 1046.50, 0.52), // C6
+            Triple(0.180, 1318.51, 0.60), // E6
+            Triple(0.230, 2093.00, 0.72)  // C7 (Crystal star peak)
+        )
+
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / sampleRate
+            var sum = 0.0
+
+            // Deep celebratory bass thump
+            if (t < 0.16) {
+                val bassFreq = 85.0 * (1.0 - (t / 0.16) * 0.45)
+                val bassEnv = exp(-(t / 0.16) * 5.5)
+                sum += sin(2.0 * PI * bassFreq * t) * bassEnv * 0.62
+            }
+
+            // Fanfare FM crystal chimes
+            for ((startT, freq, amp) in notes) {
+                if (t >= startT) {
+                    val dt = t - startT
+                    val env = exp(-dt * 6.5)
+                    val tone = sin(2.0 * PI * freq * dt) * 0.68 +
+                            sin(2.0 * PI * (freq * 2.76) * dt) * 0.24 +
+                            sin(2.0 * PI * (freq * 4.0) * dt) * 0.08
+                    sum += tone * env * amp
+                }
+            }
+
+            // Soft sparkling shimmer layer
+            if (t >= 0.20 && t < 0.45) {
+                val dt = t - 0.20
+                val shimmerEnv = exp(-dt * 8.0)
+                val shimmerTone = sin(2.0 * PI * 3136.0 * dt) * 0.12 + sin(2.0 * PI * 4186.0 * dt) * 0.08
+                sum += shimmerTone * shimmerEnv
+            }
+
+            val sample = (sum * Short.MAX_VALUE * 0.68).toInt()
+            samples[i] = sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return samples
     }
 }

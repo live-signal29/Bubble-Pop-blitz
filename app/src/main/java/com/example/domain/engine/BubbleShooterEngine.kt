@@ -18,8 +18,8 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 class BubbleShooterEngine(
-    val maxColsEven: Int = 8,
-    val maxColsOdd: Int = 7
+    val maxColsEven: Int = 10,
+    val maxColsOdd: Int = 9
 ) {
     companion object {
         const val ROW_HEIGHT_RATIO = 0.8660254f // sqrt(3) / 2
@@ -27,9 +27,9 @@ class BubbleShooterEngine(
 
     var boardWidth: Float = 1000f
     var boardHeight: Float = 1600f
-    var bubbleRadius: Float = 50f
+    var bubbleRadius: Float = 40f
         private set
-    var rowHeight: Float = 86.6f
+    var rowHeight: Float = 69.28f
         private set
     var cannonOffset: Offset = Offset(500f, 1500f)
         private set
@@ -40,7 +40,7 @@ class BubbleShooterEngine(
         boardHeight = height
         bubbleRadius = width / (maxColsEven * 2f)
         rowHeight = bubbleRadius * 2f * ROW_HEIGHT_RATIO
-        cannonOffset = Offset(width / 2f, height - (bubbleRadius * 2.8f))
+        cannonOffset = Offset(width / 2f, height - (bubbleRadius * 2.4f))
     }
 
     fun getBubbleCenter(position: GridPosition): Offset {
@@ -89,13 +89,14 @@ class BubbleShooterEngine(
         existingBubbles: Map<GridPosition, BoardBubble>
     ): AimTrajectory {
         val start = cannonOffset
-        var dx = touchOffset.x - start.x
-        var dy = touchOffset.y - start.y
+        val dx = touchOffset.x - start.x
+        // Always aim strictly upwards! Ensure effectiveDy is negative even if dragging near bottom
+        val effectiveDy = minOf(touchOffset.y - start.y, -bubbleRadius * 0.75f)
 
-        // Restrict aim to upward half-plane (angle between -170 deg and -10 deg)
-        val rawAngle = atan2(dy, dx)
-        val minAngle = (-170f * PI / 180f).toFloat()
-        val maxAngle = (-10f * PI / 180f).toFloat()
+        // Restrict aim to upward cone (angle between -172 deg and -8 deg)
+        val rawAngle = atan2(effectiveDy, dx)
+        val minAngle = (-172f * PI / 180f).toFloat()
+        val maxAngle = (-8f * PI / 180f).toFloat()
         val clampedAngle = rawAngle.coerceIn(minAngle, maxAngle)
 
         val angleDegrees = (clampedAngle * 180f / PI).toFloat()
@@ -107,13 +108,13 @@ class BubbleShooterEngine(
 
         var curX = start.x
         var curY = start.y
-        val step = bubbleRadius * 0.35f
-        val maxSteps = 450
+        val step = bubbleRadius * 0.28f
+        val maxSteps = 500
         var bounces = 0
         var targetHitOffset: Offset? = null
         var targetGridSlot: GridPosition? = null
 
-        val collisionDistSq = (bubbleRadius * 1.9f) * (bubbleRadius * 1.9f)
+        val collisionDistSq = (bubbleRadius * 1.84f) * (bubbleRadius * 1.84f)
 
         for (i in 0 until maxSteps) {
             curX += dirX * step
@@ -125,7 +126,7 @@ class BubbleShooterEngine(
                 dirX = -dirX
                 segments.add(Offset(curX, curY))
                 bounces++
-                if (bounces > 2) break
+                if (bounces > 3) break
             }
             // Right wall bounce
             else if (curX >= boardWidth - bubbleRadius && dirX > 0) {
@@ -133,7 +134,7 @@ class BubbleShooterEngine(
                 dirX = -dirX
                 segments.add(Offset(curX, curY))
                 bounces++
-                if (bounces > 2) break
+                if (bounces > 3) break
             }
 
             // Top ceiling collision
